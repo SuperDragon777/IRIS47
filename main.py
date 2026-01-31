@@ -3,6 +3,7 @@ import os
 import platform
 import getpass
 import subprocess
+import shutil
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QTabWidget, 
                              QWidget, QVBoxLayout, QGridLayout, QLineEdit, QPushButton)
@@ -170,6 +171,127 @@ def get_monitors_info():
     
     return monitors if monitors else ["N/A"]
 
+def get_disk_info():
+    disks = []
+    try:
+        if platform.system() == "Windows":
+            result = subprocess.check_output("wmic diskdrive get Model,Size,SerialNumber", shell=True).decode()
+            lines = [line.strip() for line in result.split('\n')[1:] if line.strip()]
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 2:
+                    size_bytes = parts[-1] if parts[-1].isdigit() else "0"
+                    size_gb = int(size_bytes) / (1024**3) if size_bytes.isdigit() else 0
+                    model = ' '.join(parts[:-2]) if len(parts) > 2 else ' '.join(parts[:-1])
+                    serial = parts[-2] if len(parts) > 2 and not parts[-2].isdigit() else ""
+                    
+                    disk_str = f"{model} ({size_gb:.0f} GB)"
+                    if serial and not serial.isdigit():
+                        disk_str += f" [{serial}]"
+                    disks.append(disk_str)
+                    
+        elif platform.system() == "Linux":
+            result = subprocess.check_output("lsblk -d -o NAME,SIZE,MODEL -n", shell=True).decode()
+            lines = result.strip().split('\n')
+            for line in lines:
+                parts = line.split(None, 2)
+                if len(parts) >= 2 and not parts[0].startswith('loop'):
+                    name = parts[0]
+                    size = parts[1]
+                    model = parts[2] if len(parts) > 2 else "Unknown"
+                    disks.append(f"{model} ({size})")
+                    
+        elif platform.system() == "Darwin":
+            result = subprocess.check_output("diskutil list", shell=True).decode()
+            lines = result.split('\n')
+            for line in lines:
+                if '/dev/disk' in line and 'synthesized' not in line.lower():
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        size = parts[3] + parts[4] if len(parts) > 4 else parts[3]
+                        name = ' '.join(parts[5:]) if len(parts) > 5 else "Disk"
+                        disks.append(f"{name} ({size})")
+    except:
+        disks = ["N/A"]
+    
+    return disks if disks else ["N/A"]
+
+def get_partitions_info():
+    partitions = []
+    total_size = 0
+    total_free = 0
+    
+    try:
+        if platform.system() == "Windows":
+            import string
+            for letter in string.ascii_uppercase:
+                drive = f"{letter}:\\"
+                if os.path.exists(drive):
+                    try:
+                        usage = shutil.disk_usage(drive)
+                        total_gb = usage.total / (1024**3)
+                        free_gb = usage.free / (1024**3)
+                        
+                        fs_type = "NTFS"
+                        try:
+                            result = subprocess.check_output(f'wmic logicaldisk where "DeviceID=\'{letter}:\'" get FileSystem', shell=True).decode()
+                            lines = [line.strip() for line in result.split('\n') if line.strip() and 'FileSystem' not in line]
+                            if lines:
+                                fs_type = lines[0]
+                        except:
+                            pass
+                        
+                        partitions.append(f"{letter}: ({fs_type}) {total_gb:.1f} GB ({free_gb:.1f} GB free)")
+                        total_size += total_gb
+                        total_free += free_gb
+                    except:
+                        pass
+                        
+        elif platform.system() == "Linux":
+            result = subprocess.check_output("df -h -T -x tmpfs -x devtmpfs", shell=True).decode()
+            lines = result.strip().split('\n')[1:]
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 7 and parts[0].startswith('/dev/'):
+                    device = parts[0]
+                    fs_type = parts[1]
+                    size = parts[2]
+                    avail = parts[4]
+                    mount = parts[6]
+                    
+                    partitions.append(f"{mount} ({fs_type}) {size} ({avail} free)")
+                    
+                    try:
+                        usage = shutil.disk_usage(mount)
+                        total_size += usage.total / (1024**3)
+                        total_free += usage.free / (1024**3)
+                    except:
+                        pass
+                        
+        elif platform.system() == "Darwin":
+            result = subprocess.check_output("df -h", shell=True).decode()
+            lines = result.strip().split('\n')[1:]
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 9 and parts[0].startswith('/dev/disk'):
+                    device = parts[0]
+                    size = parts[1]
+                    avail = parts[3]
+                    mount = ' '.join(parts[8:])
+                    
+                    partitions.append(f"{mount} {size} ({avail} free)")
+                    
+                    try:
+                        usage = shutil.disk_usage(mount)
+                        total_size += usage.total / (1024**3)
+                        total_free += usage.free / (1024**3)
+                    except:
+                        pass
+    except:
+        partitions = ["N/A"]
+    
+    return partitions, total_size, total_free
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -194,11 +316,13 @@ class MainWindow(QMainWindow):
         
         self.init_system_tab()
         self.init_display_tab()
+        self.init_disk_tab()
     
     def refresh_data(self):
         self.tabs.clear()
         self.init_system_tab()
         self.init_display_tab()
+        self.init_disk_tab()
     
     def init_system_tab(self):
         system_tab = QWidget()
@@ -260,6 +384,42 @@ class MainWindow(QMainWindow):
         display_tab.setLayout(layout)
         
         self.tabs.addTab(display_tab, "Display")
+    
+    def init_disk_tab(self):
+        disk_tab = QWidget()
+        layout = QGridLayout()
+        
+        disks = get_disk_info()
+        partitions, total_size, total_free = get_partitions_info()
+        
+        row = 0
+        for i, disk in enumerate(disks):
+            label = "Disk:" if i == 0 else ""
+            layout.addWidget(QLabel(label), row, 0)
+            layout.addWidget(self.create_readonly_field(disk), row, 1)
+            row += 1
+        
+        layout.addWidget(QLabel(""), row, 0)
+        row += 1
+        
+        layout.addWidget(QLabel("Partitions:"), row, 0)
+        row += 1
+        
+        for i, partition in enumerate(partitions):
+            layout.addWidget(QLabel(""), row, 0)
+            layout.addWidget(self.create_readonly_field(partition), row, 1)
+            row += 1
+        
+        if total_size > 0:
+            layout.addWidget(QLabel(""), row, 0)
+            row += 1
+            layout.addWidget(QLabel("Total Size:"), row, 0)
+            layout.addWidget(self.create_readonly_field(f"{total_size:.1f} GB ({total_free:.1f} GB free)"), row, 1)
+        
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        disk_tab.setLayout(layout)
+        
+        self.tabs.addTab(disk_tab, "Disk")
     
     def create_readonly_field(self, text):
         field = QLineEdit(text)
