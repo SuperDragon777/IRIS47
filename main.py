@@ -60,42 +60,59 @@ def get_os_info():
 
 def get_gpu_info():
     gpus = []
+    
     try:
-        if platform.system() == "Windows":
-            import wmi
-            try:
-                c = wmi.WMI()
-                for gpu in c.Win32_VideoController():
-                    name = gpu.Name
-                    try:
-                        ram_gb = int(gpu.AdapterRAM) / (1024**3)
-                        gpus.append(f"{name} ({ram_gb:.0f} GB)")
-                    except:
-                        gpus.append(name)
-            except:
+        import GPUtil
+        gpu_list = GPUtil.getGPUs()
+        for gpu in gpu_list:
+            gpus.append(f"{gpu.name} ({gpu.memoryTotal:.0f} MB)")
+    except:
+        pass
+    
+    if not gpus:
+        try:
+            if platform.system() == "Windows":
                 result = subprocess.check_output("wmic path win32_VideoController get name", shell=True).decode()
                 lines = [line.strip() for line in result.split('\n') if line.strip() and 'Name' not in line]
                 gpus = lines if lines else ["N/A"]
-        elif platform.system() == "Linux":
-            try:
-                result = subprocess.check_output("lspci | grep -i vga", shell=True).decode()
-                lines = result.strip().split('\n')
-                for line in lines:
-                    gpu = line.split(': ')[-1]
-                    gpus.append(gpu)
-            except:
-                gpus = ["N/A"]
-        elif platform.system() == "Darwin":
-            try:
-                result = subprocess.check_output("system_profiler SPDisplaysDataType | grep Chipset", shell=True).decode()
-                lines = result.strip().split('\n')
-                for line in lines:
-                    gpu = line.split(': ')[-1].strip()
-                    gpus.append(gpu)
-            except:
-                gpus = ["N/A"]
-    except:
-        gpus = ["N/A"]
+                
+            elif platform.system() == "Linux":
+                try:
+                    result = subprocess.check_output(
+                        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader", 
+                        shell=True
+                    ).decode()
+                    lines = result.strip().split('\n')
+                    for line in lines:
+                        gpus.append(line.strip())
+                except:
+                    result = subprocess.check_output("lspci | grep -i vga", shell=True).decode()
+                    lines = result.strip().split('\n')
+                    for line in lines:
+                        gpu = line.split(': ')[-1]
+                        gpus.append(gpu)
+                        
+            elif platform.system() == "Darwin":
+                try:
+                    result = subprocess.check_output(
+                        "system_profiler SPDisplaysDataType | grep 'Chipset Model\\|VRAM'", 
+                        shell=True
+                    ).decode()
+                    lines = result.strip().split('\n')
+                    current_gpu = None
+                    for line in lines:
+                        if 'Chipset Model' in line:
+                            current_gpu = line.split(': ')[-1].strip()
+                        elif 'VRAM' in line and current_gpu:
+                            vram = line.split(': ')[-1].strip()
+                            gpus.append(f"{current_gpu} ({vram})")
+                            current_gpu = None
+                    if current_gpu:
+                        gpus.append(current_gpu)
+                except:
+                    gpus = ["N/A"]
+        except:
+            gpus = ["N/A"]
     
     return gpus if gpus else ["N/A"]
 
